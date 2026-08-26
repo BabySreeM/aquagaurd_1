@@ -1,0 +1,190 @@
+# Replit prompt — AquaGuard dashboard (complete, from scratch)
+
+Paste this whole thing into a fresh Replit project. This is the full spec in one
+prompt — schema, core features, correctness rules, bypass routing, full demo feature
+set, and visual theme — so nothing needs a follow-up pass.
+
+---
+
+Build a React + Vite web dashboard called "AquaGuard" that monitors and controls an
+ESP32-based water distribution and leak-isolation system via Firebase Realtime
+Database. This is a hardware + software engineering prototype for a student
+innovation competition.
+
+## Tech stack
+
+React (functional components + hooks), Vite, plain CSS (no Tailwind, no UI component
+library — hand-rolled components), Firebase JS SDK v10. Keep all Firebase read/write
+logic in a single `src/useAquaGuard.js` hook.
+
+## Firebase schema (Realtime Database, read/write this exact shape)
+
+```json
+{
+  "system": { "phase": "NORMAL", "pump_on": true, "last_updated": 0 },
+  "tanks": {
+    "A": { "level_cm": 0, "level_pct": 0, "is_critical": true },
+    "B": { "level_cm": 0, "level_pct": 0, "is_critical": false },
+    "C": { "level_cm": 0, "level_pct": 0, "is_critical": false }
+  },
+  "source": { "level_pct": 0, "critical": false },
+  "valves": { "SV1": "OPEN", "SV2": "OPEN", "SV3": "OPEN", "bypass_manual": "CLOSED" },
+  "flow": {
+    "main_header_lpm": 0, "branch_A_lpm": 0,
+    "branch_B_inferred_lpm": 0, "branch_C_inferred_lpm": 0
+  },
+  "alerts": { "leak_detected": false, "bucket_leak_sensor": false, "source_critical": false },
+  "commands": { "bypass_confirm": false, "estop_triggered": false, "priority_tank": "A" },
+  "events": { "<push-id>": { "timestamp": 0, "type": "", "message": "" } }
+}
+```
+
+`system.phase` is one of: `NORMAL`, `FAULT_DETECTED`, `ISOLATED`, `BYPASS_ACTIVE`,
+`CRITICAL_RESERVE`. The ESP32 owns the state machine and writes phase — this dashboard
+only reads it live, it never sets phase directly.
+
+## Core features
+
+1. **Phase badge** — reads `system.phase` live.
+2. **Tank cards** (A, B, C) — fill-level bound to `/tanks/{id}/level_pct`, valve state
+   per tank, priority tag on whichever tank matches `/commands/priority_tank`.
+3. **Source reservoir tile** — bound to `/source`, showing level and its own critical
+   flag, distinct from per-branch tank state.
+4. **Live pipe schematic** — source → header → SV1/SV2/SV3 → Tank A/B/C, plus a bypass
+   path from header to Tank A through a BYPASS valve icon.
+5. **Flow readouts panel** bound to `/flow`.
+6. **Alert posture panel** — leak detection, bucket sensor, source reserve, bound to
+   `/alerts`.
+7. **Control panel**, writes ONLY to `/commands`, never to `/system` or `/valves`:
+   - "Confirm Bypass Opened" → `commands/bypass_confirm = true`, enabled only when
+     phase === "ISOLATED".
+   - "Emergency Stop" → `commands/estop_triggered = true`, with a confirmation step.
+   - "Reset" → clears `estop_triggered` and `bypass_confirm`.
+8. **Priority tank selector** — writes `commands/priority_tank`, switchable at any time,
+   not just before a fault.
+9. **Manual valve override** — separate small control letting the operator force any
+   individual valve open/closed directly via a dedicated command path
+   (`commands/manual_valve_override/{valve_id}`), distinct from the automatic phase
+   logic — clearly labeled as a manual override, not part of the automated sequence.
+10. **Event log** — subscribes to `/events` with `onChildAdded`, newest first,
+    permanent record, with a simple text-export/download button and a basic type
+    filter (alert / command / system).
+11. **Historical chart** — tank levels over time using a local rolling buffer, with
+    vertical marker lines at each phase-transition timestamp so the chart itself
+    shows the story.
+
+## Bypass routing — must be visually correct
+
+When phase becomes `BYPASS_ACTIVE`: SV1 shown CLOSED (inactive), the bypass line from
+header to Tank A shown ACTIVE (solid, animated flow, not dashed), and Tank A's flow
+reading reflects supply via the bypass path, not via SV1. This must update live with
+the phase — verify explicitly before considering the build done.
+
+## Correctness rules
+
+- Alert posture items default to a neutral "no data" state, never a false "all clear"
+  green check when disconnected. Green only after a real `false` is received.
+- Valve OPEN/CLOSED/no-signal distinct by shape and fill, not just color shade.
+- Phase badge, alert banners, and active-state colors stay legible and high-contrast
+  even within the bold theme.
+- Staleness indicator ("last updated Xs ago" from `/system/last_updated`), updating
+  every second, clearly flagged if stale beyond 5 seconds.
+- Emergency Stop and Confirm Bypass disabled (not just non-functional) when
+  disconnected, with a visible reason shown.
+- Never fabricate sensor data outside of the explicit Demo Mode described below.
+
+## Demo Mode — full feature set
+
+Physical hardware may not be connected during a presentation. Demo Mode is a manual,
+explicit alternative data source, never a silent fallback, and never active
+simultaneously with real Firebase data.
+
+**Activation and labeling:**
+- "Run in Demo Mode" button offered alongside the "Firebase not configured" state.
+- Persistent visible badge "DEMO MODE — SIMULATED DATA" on every screen while active,
+  plus one line: "Hardware under assembly — this feed mirrors what the ESP32 will send
+  once connected."
+- "Exit Demo Mode" control to return to listening on real Firebase data at any time.
+- "Replay Demo" button that resets state to NORMAL and re-arms the sequence without a
+  page reload, so the full sequence can be run more than once in a sitting.
+
+**Simulated data behavior — phase-aware, not a flat random walk:**
+- In NORMAL phase, all tank levels drift gently (+/- 0.5%) so the UI doesn't look frozen.
+- Once `CRITICAL_RESERVE` is reached, the priority tank (per `commands/priority_tank`)
+  continues rising or holding steady, while non-priority tanks flatten or trend
+  slightly downward — the simulated data must visibly demonstrate prioritization, not
+  just display a state label.
+- Flow readouts (`/flow`) must also respond to phase: branches behind a closed valve
+  show ~0 LPM, not a continuing nonzero value.
+- Simulate a source reservoir level separately from tank levels, with its own
+  "Simulate Source Critical" trigger, independent from the branch-leak trigger — this
+  lets you demo whole-system scarcity as a distinct scenario from a single-branch leak.
+- Include a running "water saved" counter that increments while in CRITICAL_RESERVE,
+  based on the difference between normal and restricted flow to non-priority tanks —
+  displayed as a concrete liters number.
+
+**Two independent fault scenarios:**
+- "Simulate Leak — Branch A" — the original 5-phase sequence (Normal → Fault Detected →
+  Isolated → Bypass Active → Critical Reserve) ending with Tank A bypassed.
+- "Simulate Leak — Branch B" — a second, independent scenario using Tank B/SV2 instead,
+  so the demo can show the system isn't hardcoded to one branch if asked.
+
+**Narrative aids ("Judge Mode" additions):**
+- A thin auto-narration caption bar that updates in plain language at each phase
+  transition (e.g. "SV2 just closed — Tank B restricted to protect reserve"), sourced
+  from the same event data driving the log, so it stays in sync automatically.
+- A brief visual pulse/highlight animation on whichever valve, tank, or tile just
+  changed state, drawing the eye there without manual pointing.
+- A per-phase duration readout (e.g. "Isolated in 2.1s") shown briefly after each
+  transition, framed as a responsiveness metric.
+
+**Recovery sequence:**
+- Emergency Stop, when triggered from Demo Mode, shows an explicit "system halted"
+  banner and pump status flipping to OFF with a visible confirmation step.
+- A "Resume" control path that walks back from halted state to NORMAL, distinct from
+  "Reset" (which only clears command flags) — Resume should feel like a deliberate
+  recovery action, not an instant undo.
+
+## Visual theme: Maximalism + Bento Grid + Spatial UI
+
+**Anti-generic warning:** do not default to a dark navy background with cyan/teal glow,
+uniform equal-size rounded cards, thin hairline borders, or uppercase monospace labels
+throughout. That look is an overused AI-dashboard default and must not appear here.
+
+**Background:** warm light base — cream/off-white (`#F7F3EC` or similar), never dark
+mode as the primary surface.
+
+**Bento grid, genuinely asymmetric:** one dominant tile (roughly half to two-thirds of
+its section) paired with several smaller supporting tiles, varying meaningfully in
+size, padding, and alignment — not a repeated uniform card component.
+
+**Color:** a real multi-hue palette — deep forest teal (`#0E5C68`), warm coral
+(`#E8432E`), amber/gold (`#E8A628`), and a deep indigo/violet as a fourth accent, all
+on the cream base. Each phase state and tile category commits to its own color rather
+than everything sharing one tinted accent.
+
+**Typography:** one bold, characterful display face (Fraunces or Bricolage Grotesque)
+for the phase badge and key numbers, sized large as a genuine centerpiece; clean simple
+sans for supporting text and labels. Avoid monospace as the default UI convention —
+fine only for small inline telemetry numbers if truly needed.
+
+**Spatial depth:** real, visible soft warm-toned shadows so tiles read as sitting at
+different heights, not thin gray borders. Allow occasional tile overlap or bleed past
+the strict grid line. Subtle 1-3 degree rotation on a decorative badge or icon here and
+there. Hover states lift and slightly scale a tile with spring easing.
+
+**What NOT to do:** don't let visual density compromise state clarity — valve
+open/closed, alert true/false/unknown, and stale/fresh must stay instantly readable
+even in a busy layout. Don't make every tile equally loud — the phase badge and any
+active alert must remain the clear visual priority on screen. Must stay responsive on
+mobile, reflowing the bento grid into a sensible stacked layout on narrow screens.
+
+## Deliverable
+
+A working Vite + React app implementing the schema, all core features, the bypass
+routing fix, the correctness rules, and the full Demo Mode feature set above, styled
+per the maximalist bento-grid spatial theme, with a `.env.example` listing required
+Firebase env vars and a short README covering setup and the ESP32 side of the schema.
+Before calling the build done, explicitly verify: the bypass schematic updates live,
+Tank C-style non-priority tanks flatten/dip during Critical Reserve rather than
+continuing to rise, and the Demo Mode badge is visible on every screen while active.

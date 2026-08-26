@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AquaGuard"
+description = "A real-time water distribution and leak-isolation dashboard for monitoring ESP32 systems, visualizing tank health, and coordinating safe operator controls."
+version = "1.0.0"
+id = "artifacts/aquaguard"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24874
+
+[services.development]
+run = "pnpm --filter @workspace/aquaguard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/aquaguard", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/aquaguard/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24874"
+BASE_PATH = "/"
